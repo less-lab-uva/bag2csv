@@ -79,7 +79,7 @@ def find_hz(bag_name):
 	print()
 	print(nanoavgs)
 	gcd_ans = gcd(nanoavgs)
-	print(type(gcd_ans))
+	#print(type(gcd_ans))
 	# 17230363332
 	print("gcd("+str(nanoavgs)+")="+ str(gcd_ans)+"="+str(float(gcd_ans)))
 	hz_dict['all'] = float(gcd_ans)
@@ -91,7 +91,7 @@ def main():
 	print("begin test_hz")
 	bag_name = sys.argv[1]
 	print(bag_name)
-	find_hz(bag_name)
+	hz_dict = find_hz(bag_name)
 	print("done main")
 
 

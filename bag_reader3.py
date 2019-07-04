@@ -38,6 +38,7 @@ from array import *
 
 hz_dict = {}
 bag_topics = []
+bag_array = []
 
 def build_parser():
     """Creates parser for command line arguments """
@@ -258,49 +259,57 @@ def find_hz(bag_name):
         if(math.isnan(avg)):
             avg = 0.0
         f_avg = Fraction(str(long(avg))).limit_denominator(100)
-        
-        #print()
-        #print(topic + " " + str(avg))
-        #print("f_avg=" + str(f_avg) +"="+str(float(f_avg)))
         try:
-            #print("avg "+str(avg))
             r_avg = round_to_1(avg)
-            #print("round_to_1 avg "+str(r_avg))
         except Exception as e:
             print(e)
-        #print("avg="+str(summation)+"/"+str(len(temp))+"="+str(r_avg))
         if(math.isnan(r_avg)):
             avg = 0.0
         f_avg = Fraction(str(r_avg)).limit_denominator(1000)
         nanoavgs.append(f_avg)
         hz_dict[topic] = r_avg
-    #print()
-    #print(nanoavgs)
     gcd_ans = gcd(nanoavgs)
     hz_dict['all'] = float(gcd_ans)
-    #print(type(gcd_ans))
-    #print("gcd("+str(nanoavgs)+")="+ str(gcd_ans)+"="+str(float(gcd_ans)))
-    #print("done find_hz")
     print(hz_dict)
     return hz_dict
 
 
-def write_to_csv(bag_name, output_name, topic_name):
-    """ Entry point for writing all messages published on a topic to a CSV file """
+# write_to_csv() for all topics in one file
+def process_bag(bag_name):
+    global bag_array
     bag = rosbag.Bag(bag_name)
-    f = open(output_name, 'w')
-    """ Write the name of the fields as the first line in the header file """
-    column_names = write_header_line(bag, f, topic_name)
-    """ Go through the bag and and write every message for a topic out to the
-            CSV file
-    """
-    write_topic(bag, f, topic_name, column_names)
+    """ Write the name of the fields as the first array in the 2D bag array """
+    #column_names = write_header_line(bag, f, topic_name)
+    column_names = get_header_array(bag)
+    """ Go through the bag and and write every message into array """
     """ Cleanup """
-    f.close()
     bag.close()
 
 
+def write_to_csv(output_name):
+    global bag_array
+    f = open(output_name, 'w')
+    """ Write the name of the fields as the first line in the header file """
+    column_names = write_header_line(bag, f, topic_name)
+    """ Go through the bag and and write every message for a topic out to the CSV file """
+    for arr in bag_array:
+        for string in arr:
+            f.write(string+",")
+        f.write("\n")
+    """ Cleanup """
+    f.close()
+
+
+def get_header_array(bag):
+    global bag_topics
+    header_column_names = []
+    
+    for _, msg, _ in bag.read_messages(topics=bag_topics):
+        get_field_names('', msg, header_column_names)
+        
+
 def write_header_line(bag, output_file, topic_name):
+    global field_names
     """ Writes a comma delimited list of the field names to a file. bag is an already opened bag
         file, output_file is an output file that has already been opened, and topic name identifies
         the topic to display information about,
@@ -308,12 +317,12 @@ def write_header_line(bag, output_file, topic_name):
         The field names are written in alphabetical order.
     """
     header_column_names = []
-
+    field_names = dict((key,[]) for key in bag_topics)
     """ Use the first message from a topic to build the header line. Note that this
             assumes the first message has all of the fields fully defined
     """
-    for _, msg, _ in bag.read_messages(topics=topic_name):
-        get_field_names('', msg, header_column_names)
+    for topic, msg, _ in bag.read_messages(topics=topic_name):
+        get_field_names('', msg, topic)
         break
 
     """ Alphabetize and write the column names to the output file, minus the leading underscore """
@@ -325,7 +334,8 @@ def write_header_line(bag, output_file, topic_name):
     return header_column_names
 
 
-def get_field_names(prefix, msg, existing_names):
+def get_field_names(prefix, msg, topic):
+    global field_names
     """ Recursive helper function for writing the header line. Works on the same principle as how
         the topics' fields are listed. Instead of printing them out to standard output, the parts of
         the messages are combined with underscores. When a leaf field is encountered, the entire
@@ -333,12 +343,14 @@ def get_field_names(prefix, msg, existing_names):
     """
     if hasattr(msg, '__slots__'):
         for slot in msg.__slots__:
-            get_field_names('_'.join([prefix, slot]), getattr(msg, slot), existing_names)
+            get_field_names('_'.join([prefix, slot]), getattr(msg, slot), topic)
     elif isinstance(msg, list) and (len(msg) > 0) and hasattr(msg[0], '__slots__'):
         for slot in msg[0].__slots__:
-            get_field_names('_'.join([prefix, slot]), getattr(msg[0], slot), existing_names)
+            get_field_names('_'.join([prefix, slot]), getattr(msg[0], slot), topic)
     elif isinstance(msg, tuple):
-        existing_names.append(prefix)
+        field_arr = field_names[topic]
+        field_arr.append(prefix)
+        field_names.update({topic, field_arr})
     else:
         existing_names.append(prefix)
 
@@ -471,15 +483,12 @@ if __name__ == "__main__":
             display_stats(bag)
         else:
             find_hz(bag)
-            for topic in bag_topics:
-                print('\tProcessing topic: ' + topic)
-                """ Output topic information to a file. If no output file has been specified, build one
-                    from the file name and topic
-                """
-                if args.out_file is None:
-                    out_file = os.path.splitext(bag)[0] + topic.replace('/', '_') + '.csv'
-                else:
-                    out_file = args.out_file[idx]
-                write_to_csv(bag, out_file, topic)
-                idx += 1
+            #process_bag(bag)
+            #print('\tProcessing topic: ' + topic)
+            if args.out_file is None:
+                out_file = os.path.splitext(bag)[0] + '.csv'
+            else:
+                out_file = args.out_file[idx]
+            write_to_csv(out_file)
+            
 
