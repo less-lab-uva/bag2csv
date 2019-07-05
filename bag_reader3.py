@@ -281,9 +281,8 @@ def find_hz(bag_name):
     print(hz_dict)
     return hz_dict
 
-#'start'= 1554731872.79301
-#t.tosec = 
-# write_to_csv() for all topics in one file
+
+""" write_to_csv() for all topics in one file """
 def process_bag(bag_name):
     global bag_array
     global bag_info
@@ -304,50 +303,49 @@ def process_bag(bag_name):
     msg_count = 0
     for topic, msg, t in bag.read_messages(topics=bag_topics.tolist()):
         msg_count = msg_count + 1
-        print("\n\n===============MSG #"+str(msg_count)+"===============")
-        print("topic"+str(topic))
-        print("msg"+str(msg))
-        print("t:"+str(t))
-        print("type of t:"+str(type(t)))
-        
-        time_in = t-start_time
-        print("Time in: "+str(time_in))
-        print("type of time_in: "+str(type(time_in)))
+        #print("\n\n===============MSG #"+str(msg_count)+"===============")
+        #print("topic"+str(topic))
+        #print("msg"+str(msg))
+        #print("t:"+str(t))
+        #print("type of t:"+str(type(t)))
         row_index = get_row_index(start_time, t)
         parse_message_to_array(msg,topic,row_index)
         #if(msg_count > 20):
         #    break
+    interpolate_columns()
     """ Cleanup """
     bag.close()
     
 
 def get_row_index(start_time, t):
-    print("start_time:"+str(start_time))
-    print("start_time.to_sec():"+str(start_time.to_sec()))
-    print("t:"+str(t))
-    print("t.to_sec():"+str(t.to_sec()))
-    print("t-start_time:"+str(t-start_time))
-    print("t.to_sec()-start_time.to_sec():"+str(t.to_sec()-start_time.to_sec()))
+    #print("start_time:"+str(start_time))
+    #print("start_time.to_sec():"+str(start_time.to_sec()))
+    #print("t:"+str(t))
+    #print("t.to_sec():"+str(t.to_sec()))
+    #print("t-start_time:"+str(t-start_time))
+    #print("t.to_sec()-start_time.to_sec():"+str(t.to_sec()-start_time.to_sec()))
     # Python standard library round() is dangerous due to floating point math
     #time_in = round(t.to_sec()-start_time.to_sec(), 2) 
     time_in = safe_round(t.to_sec()-start_time.to_sec(), 2)
-    print("time_in(float):"+str(time_in))
+    #print("time_in(float):"+str(time_in))
     time_in = rospy.Time.from_sec(time_in)
-    print("time_in(Time):"+str(time_in))
+    #print("time_in(Time):"+str(time_in))
     row_index = float(time_in.to_sec() / hz_dict["all"])
     row_index = int(round(row_index))+1 # add 1 to accomodate headers at 0th position
-    print("row_index:"+str(row_index))
+    #print("row_index:"+str(row_index))
     return row_index
+
 
 def safe_round(num,sig_digs):
     return round(num+10**(-len(str(num))-1),sig_digs)
+
 
 def parse_message_to_array(msg,topic,row_index):
     global bag_array
     global header_column_names
     global hz_dict
     """ Get row to write to by rounding time_in """
-    print("write_message_to_array(msg,topic,time_in)")
+    #print("\n\nwrite_message_to_array(msg,topic,time_in)")
     row = bag_array[row_index]
     column_values = {}
     column_mapping = field_names[topic]
@@ -356,8 +354,8 @@ def parse_message_to_array(msg,topic,row_index):
     """
     find_field_value('', msg, column_values, column_mapping)
     #column_mapping = ['.'.join([topic, col]) for col in column_mapping]
-    print("\tcolumn_mapping: "+str(column_mapping))
-    print("\tcolumn_values: "+str(column_values))
+    #print("\tcolumn_mapping: "+str(column_mapping))
+    #print("\tcolumn_values: "+str(column_values))
     """ write the discovered values to the bag_array """
     write_message_to_array(topic, column_mapping, column_values, row_index)
 
@@ -369,21 +367,83 @@ def write_message_to_array(topic, column_mapping, column_values, row_index):
         header = ".".join([topic, field])
         column_index = header_column_names.index(header)
         val = str(column_values["_"+field])
-        val_string = val_string.replace('\n',' ')
-        val_string = val_string.replace('\t',' ')
-        val_string = val_string.replace(',',' ')
-        val_string = val_string.replace('\r','')
-        bag_array[row_index][column_index] = val_string
-    print("bag_array["+str(row_index)+"]:")
-    print(bag_array[row_index])
-        
+        val = val.replace('\n',' ')
+        val = val.replace('\t',' ')
+        val = val.replace(',',' ')
+        val = val.replace('\r','')
+        bag_array[row_index][column_index] = val
+    #print("bag_array["+str(row_index)+"]:")
+    #print(bag_array[row_index])
+    
 
-def commaless_array_string(arr):
-    return_string = "["
-    for string in arr:
-        return_string = return_string + string +" "
-    #return_string[len(return_string)-1]="]"
-    return return_string +"]"
+def interpolate_columns():
+    global bag_array
+    global header_column_names
+    print("\n\ninterpolate_columns()")
+    temp_cols = ["/command_state.data"]
+    #for col in header_column_names:
+    for col in temp_cols:
+        col_index = header_column_names.index(col)
+        i = 1
+        first_index = 1
+        first_val = bag_array[first_index][col_index]
+        next_val = ""
+        for row in bag_array:
+            # find next instance of non-empty cell
+            cell = bag_array[i][col_index]
+            next_index = i
+            print(header_column_names)
+            print(bag_array[0])
+            print(bag_array[0:len(bag_array)-1][col_index])
+            print("col_index:"+str(col_index))
+            print("cell:"+str(cell))
+            print("len(bag_array):"+str(len(bag_array)))
+            #print("did i fuck up the column index+1? "+str(bag_array[col_index+1][i]))
+            #print("did i fuck up the column index-1? "+str(bag_array[col_index-1][i]))
+            
+            # skip empty cells
+            if(cell == ""):
+                continue
+            # find first instance of non-empty cell
+            elif(first_val == "" and next_val == ""): # and cell != ""):
+                print("first_val:"+str(first_val)+" next_val:"+str(next_val))
+                first_val = cell
+                first_index = i
+            # find next instance of non-empty cell
+            elif(first_val != "" and next_val == ""): # and cell != ""):
+                print("first_val:"+str(first_val)+" next_val:"+str(next_val))
+                next_val = cell
+                next_index = i
+                # if number, divide difference between the two by number of empty cells in between
+                if(test_for_numeric(first_val) and test_for_numeric(next_val)):
+                    difference = float(next_val) - float(first_val)
+                    timestep_difference = next_index - first_index
+                    # fill in the steps in between
+                    try:
+                        stepwise_difference = difference / timestep_difference
+                    except ZeroDivisionError:
+                        stepwise_difference = 0
+                    for index in range(1,timestep_difference-1):
+                        bag_array[first_val + index][col_index] = first_val + stepwise_difference * index
+                # if string, and fill in using last string until next non-empty cell
+                else:
+                    timestep_difference = next_index - first_index
+                    for index in range(1,timestep_difference-1):
+                        bag_array[first_val + index][col_index] = first_val
+                # switch first and next, set next to empty
+                first_val = next_val
+                next_val = ""
+                first_index = next_index
+            i = i + 1
+
+
+def test_for_numeric(val):
+    try:
+        float(val)
+    except ValueError:
+        return False
+    else:
+        return True
 
 
 def initialize_bag_array():
@@ -396,14 +456,14 @@ def initialize_bag_array():
     duration = bag_info["duration"]
     rows = duration / universal_hz
     print("initialize_bag_array()")
-    print("\trows (raw): "+str(rows))
+    #print("\trows (raw): "+str(rows))
     # Add 2 for rounding, 1 for headers row
     if(rows - (rows % 1) > 0):
         rows = int(rows) + 2
     else:
         rows = int(rows) + 1
     
-    print("\trows: "+str(rows))
+    #print("\trows: "+str(rows))
     bag_array = [["" for i in range(arr2_length)] for i in range(rows)]
     bag_array[0] = header_column_names
     #print("bag_array[0:3]:")
@@ -492,7 +552,7 @@ def write_to_csv(output_name):
     print("\n\nWRITING TO CSV")
     i = 0
     for arr in bag_array:
-        print("ROW "+str(i)+": "+str(arr))
+        #print("ROW "+str(i)+": "+str(arr))
         try:
             line = ','.join(arr) + '\n'
             f.write(line)
