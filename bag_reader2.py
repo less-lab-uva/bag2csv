@@ -32,12 +32,18 @@ from fractions import Fraction
 import numpy as np
 import time
 import rosbag
+import rospy
+from rospy import Duration
+from rospy import Time
 from sets import Set
 import xml.etree.ElementTree as ET
 from array import *
 
 hz_dict = {}
 bag_topics = []
+bag_array = []
+start_time = Duration(-1)
+time_deltas = []
 
 def build_parser():
     """Creates parser for command line arguments """
@@ -115,6 +121,7 @@ def validate_args(cmd_args):
 
 
 def display_bag_info(bag_name):
+    global bag_info
     """ Lists every topic in the bag, and the fields within each topic. Data is sent to the standard
         output. This assumes that every message for a given topic has the same format in the bag.
         This can sometimes break. For example, if a topic has an array of geometry_msgs/Vector3 in
@@ -129,15 +136,12 @@ def display_bag_info(bag_name):
                     secs
                     nsecs
     """
-
     """ Get the bag file summary info """
     bag_info = yaml.load(subprocess.Popen(
         ['rosbag', 'info', '--yaml', bag_name], stdout=subprocess.PIPE).communicate()[0])
-
     """ Get the topics in the bag """
     bag_topics = bag_info['topics']
     bag = rosbag.Bag(bag_name)
-
     """ For every topic in the bag, display its fields. Only do this once per topic """
     for topic in bag_topics:
         for _, msg, _ in bag.read_messages(topics=topic['topic']):
@@ -145,9 +149,7 @@ def display_bag_info(bag_name):
             print_topic_fields(topic['topic'], msg, 0)
             print('')
             break
-
     bag.close()
-
     sys.stdout.write("Found %u topics\n" % len(bag_topics))
 
 
@@ -213,10 +215,15 @@ def display_stats(bag_name):
 def round_to_1(x):
 	return round(x, -int(math.floor(math.log10(abs(x)))))
 
+
 def gcd(L):
 	#return reduce(fractions.gcd, map(fractions.Fraction,L))
 	return reduce(fractions.gcd, L)
 
+
+#bag_reader3.py:259: RuntimeWarning: invalid value encountered in double_scalars
+  #avg = summation / len(temp)
+#math domain error
 def find_hz(bag_name):
     global hz_dict, bag_topics
     bag = rosbag.Bag(bag_name)
@@ -227,7 +234,9 @@ def find_hz(bag_name):
     for topic in bag_topic_dict:
         temp.append(topic['topic'])
     bag_topics = np.array(temp)
-    #print(bag_topics)
+    bag_topics.sort()
+    print("bag_topics: ")
+    print(bag_topics)
     hz_dict = dict.fromkeys(bag_topics)
     bag_hzs = dict.fromkeys(bag_topics)
     for topic in bag_topics:
@@ -258,74 +267,287 @@ def find_hz(bag_name):
         if(math.isnan(avg)):
             avg = 0.0
         f_avg = Fraction(str(long(avg))).limit_denominator(100)
-        
-        #print()
-        #print(topic + " " + str(avg))
-        #print("f_avg=" + str(f_avg) +"="+str(float(f_avg)))
         try:
-            #print("avg "+str(avg))
             r_avg = round_to_1(avg)
-            #print("round_to_1 avg "+str(r_avg))
         except Exception as e:
             print(e)
-        #print("avg="+str(summation)+"/"+str(len(temp))+"="+str(r_avg))
         if(math.isnan(r_avg)):
             avg = 0.0
         f_avg = Fraction(str(r_avg)).limit_denominator(1000)
         nanoavgs.append(f_avg)
         hz_dict[topic] = r_avg
-    #print()
-    #print(nanoavgs)
     gcd_ans = gcd(nanoavgs)
     hz_dict['all'] = float(gcd_ans)
-    #print(type(gcd_ans))
-    #print("gcd("+str(nanoavgs)+")="+ str(gcd_ans)+"="+str(float(gcd_ans)))
-    #print("done find_hz")
     print(hz_dict)
     return hz_dict
 
 
-def write_to_csv(bag_name, output_name, topic_name):
-    """ Entry point for writing all messages published on a topic to a CSV file """
+""" write_to_csv() for all topics in one file """
+def process_bag(bag_name):
+    global bag_array
+    global bag_info
+    bag_info = yaml.load(subprocess.Popen(
+        ['rosbag', 'info', '--yaml', bag_name], stdout=subprocess.PIPE).communicate()[0])
+    print(bag_info)
+    #print(bag_info["start"])
+    #print(type(bag_info["start"]))
+    #exit()
+    start_time = rospy.Time.from_sec(bag_info["start"]) # convert from float to Time
+    #TODO: check time conversion
     bag = rosbag.Bag(bag_name)
-    f = open(output_name, 'w')
-    """ Write the name of the fields as the first line in the header file """
-    column_names = write_header_line(bag, f, topic_name)
-    """ Go through the bag and and write every message for a topic out to the
-            CSV file
-    """
-    write_topic(bag, f, topic_name, column_names)
+    """ Write the name of the fields as the first array in the 2D bag array """
+    column_names = get_header_array(bag)
+    """ Initialize the bag_array according to duration and universal Hz """
+    initialize_bag_array()
+    """ Go through the bag and and write every message into array """
+    msg_count = 0
+    print("process_bag("+bag_name+")")
+    print("\tbag size: rows:"+str(len(bag_array))+" cols:"+str(len(bag_array[0])))
+    for topic, msg, t in bag.read_messages(topics=bag_topics.tolist()):
+        msg_count = msg_count + 1
+        #print("\n\n===============MSG #"+str(msg_count)+"===============")
+        #print("topic"+str(topic))
+        #print("msg"+str(msg))
+        #print("t:"+str(t))
+        row_index = get_row_index(start_time, t)
+        parse_message_to_array(msg,topic,row_index)
+    #trim_csv()
+    interpolate_columns()
     """ Cleanup """
-    f.close()
     bag.close()
+    
+
+def get_row_index(start_time, t):
+    #print("start_time:"+str(start_time))
+    #print("start_time.to_sec():"+str(start_time.to_sec()))
+    #print("t:"+str(t))
+    #print("t.to_sec():"+str(t.to_sec()))
+    #print("t-start_time:"+str(t-start_time))
+    #print("t.to_sec()-start_time.to_sec():"+str(t.to_sec()-start_time.to_sec()))
+    # Python standard library round() is dangerous due to floating point math
+    #time_in = round(t.to_sec()-start_time.to_sec(), 2) 
+    time_in = safe_round(t.to_sec()-start_time.to_sec(), 2)
+    #print("time_in(float):"+str(time_in))
+    time_in = rospy.Time.from_sec(time_in)
+    #print("time_in(Time):"+str(time_in))
+    row_index = float(time_in.to_sec() / hz_dict["all"])
+    row_index = int(round(row_index))+1 # add 1 to accomodate headers at 0th position
+    #print("row_index:"+str(row_index))
+    return row_index
 
 
-def write_header_line(bag, output_file, topic_name):
-    """ Writes a comma delimited list of the field names to a file. bag is an already opened bag
-        file, output_file is an output file that has already been opened, and topic name identifies
-        the topic to display information about,
+def safe_round(num,sig_digs):
+    return round(num+10**(-len(str(num))-1),sig_digs)
 
-        The field names are written in alphabetical order.
+
+def parse_message_to_array(msg,topic,row_index):
+    global bag_array
+    global header_column_names
+    global hz_dict
+    """ Get row to write to by rounding time_in """
+    #print("\n\nwrite_message_to_array(msg,topic,time_in)")
+    row = bag_array[row_index]
+    column_values = {}
+    column_mapping = field_names[topic]
+    """ Build a dictionary of field names and their values. The field names
+            match the message fields.
     """
+    find_field_value('', msg, column_values, column_mapping)
+    #column_mapping = ['.'.join([topic, col]) for col in column_mapping]
+    #print("\tcolumn_mapping: "+str(column_mapping))
+    #print("\tcolumn_values: "+str(column_values))
+    """ write the discovered values to the bag_array """
+    write_message_to_array(topic, column_mapping, column_values, row_index)
+
+
+def write_message_to_array(topic, column_mapping, column_values, row_index):
+    global bag_array
+    global header_column_names
+    for field in column_mapping:
+        header = ".".join([topic, field])
+        column_index = header_column_names.index(header)
+        val = str(column_values["_"+field])
+        val = val.replace('\n',' ')
+        val = val.replace('\t',' ')
+        val = val.replace(',',' ')
+        val = val.replace('\r','')
+        bag_array[row_index][column_index] = val
+    
+
+def trim_csv():
+    global bag_array
+    global header_column_names
+    # TODO: constrain to leading and trailing rows
+    for row in bag_array:
+        all_cols_empty = check_empty(row)
+        #if(all_cols_empty):
+            # remove that row
+
+
+def check_equal(row):
+    iterator = iter(row)
+    try:
+        first = next(iterator)
+    except StopIteration:
+        return True
+    return all(first == rest for rest in iterator)
+    
+    
+def check_empty(row):
+    iterator = iter(row)
+    try:
+        first = next(iterator)
+    except StopIteration:
+        return first == ""
+    return all(first == "" and "" == rest for rest in iterator)
+
+
+def interpolate_columns():
+    global bag_array
+    global header_column_names
+    print("\n\ninterpolate_columns()")
+    temp_cols = ["/command_state.data"]
+    for col in header_column_names:
+    #for col in temp_cols:
+        col_index = header_column_names.index(col)
+        i = 0
+        first_index = 1
+        first_val = bag_array[first_index][col_index]
+        next_val = ""
+        last_nonempty_instance = ""
+        for row in bag_array[0:len(bag_array)-1]:
+            # find next instance of non-empty cell
+            i = i + 1
+            # print("\n\ni:"+str(i))
+            cell = bag_array[i][col_index]
+            next_index = i
+            #print(header_column_names)
+            #print("len(bag_array):"+str(len(bag_array)))
+            #print(bag_array[0])
+            #print(bag_array[0:len(bag_array)-1][col_index])
+            #print("col_index:"+str(col_index))
+            # print("row_index:"+str(i)+", first_val:"+str(first_val)+" next_val:"+str(next_val))
+            # print("row:"+str(row))
+            # print("first_val:"+str(first_val)+" next_val:"+str(next_val))
+            # print("cell:"+str(cell))
+            # skip empty cells
+            if(i == len(bag_array)-1):
+                # backfill empty cells with last message
+                # print("row number "+str(i)+", first_val:"+str(first_val)+" next_val:"+str(next_val))
+                for index in range(first_index, len(bag_array)):
+                    bag_array[index][col_index] = last_nonempty_instance
+            elif(cell == ""):
+                continue
+            # find first instance of non-empty cell
+            elif(first_val == "" and next_val == ""):
+                # print("first_val:"+str(first_val)+" next_val:"+str(next_val))
+                first_val = cell
+                first_index = i
+                # backfill all empty cells with first value found
+                for index in range(1,i):
+                    bag_array[index][col_index] = first_val
+            # find next instance of non-empty cell
+            elif(first_val != "" and next_val == ""):
+                # print("first_val:"+str(first_val)+" next_val:"+str(next_val))
+                next_val = cell
+                next_index = i
+                # if number, divide difference between the two by number of empty cells in between
+                if(test_for_numeric(first_val) and test_for_numeric(next_val)):
+                    difference = float(next_val) - float(first_val)
+                    timestep_difference = next_index - first_index
+                    # fill in the steps in between
+                    try:
+                        stepwise_difference = difference / timestep_difference
+                    except ZeroDivisionError:
+                        stepwise_difference = 0
+                    for index in range(1,timestep_difference):
+                        interpolated_datum = float(first_val) + stepwise_difference * index
+                        interpolated_datum = normalize_interpolated_datum(col, interpolated_datum)
+                        bag_array[first_index + index][col_index] = interpolated_datum
+                # if string, and fill in using last string until next non-empty cell
+                else:
+                    timestep_difference = next_index - first_index
+                    for index in range(1,timestep_difference):
+                        bag_array[first_index + index][col_index] = first_val
+                
+                if(next_val != ""):
+                    last_nonempty_instance = next_val
+                    last_nonempty_instance_index = next_index
+                else:
+                    last_nonempty_instance = first_val
+                    last_nonempty_instance_index = first_index
+                # switch first and next, set next to empty
+                first_val = next_val
+                next_val = ""
+                first_index = next_index
+            elif(i == len(bag_array)-2):
+                # backfill empty cells with last message
+                # print("row number "+str(i)+", first_val:"+str(first_val)+" next_val:"+str(next_val))
+                for index in range(first_index, len(bag_array)-1):
+                    bag_array[index][col_index] = last_nonempty_instance
+            
+
+def normalize_interpolated_datum(col, interpolated_datum):
+    if(col == "/visp_auto_tracker/status.data"):
+        return int(safe_round(interpolated_datum, 0))
+    else:
+        return interpolated_datum
+    
+
+def test_for_numeric(val):
+    try:
+        float(val)
+    except ValueError:
+        return False
+    else:
+        return True
+
+
+def initialize_bag_array():
+    global bag_info
+    global bag_array
+    global hz_dict
+    global header_column_names
+    arr2_length = len(header_column_names)
+    universal_hz = hz_dict["all"]
+    duration = bag_info["duration"]
+    rows = duration / universal_hz
+    print("initialize_bag_array()")
+    #print("\trows (raw): "+str(rows))
+    # Add 2 for rounding, 1 for headers row
+    if(rows - (rows % 1) > 0):
+        rows = int(rows) + 2
+    else:
+        rows = int(rows) + 1
+    
+    #print("\trows: "+str(rows))
+    bag_array = [["" for i in range(arr2_length)] for i in range(rows)]
+    bag_array[0] = header_column_names
+    
+
+def get_header_array(bag):
+    global field_names  #dict mapping topic to field names
+    global header_column_names #array preserving order of topics and their fields in bag_array
+    global bag_topics
+    global bag_array
+    print("INSIDE get_header_array")
     header_column_names = []
-
-    """ Use the first message from a topic to build the header line. Note that this
-            assumes the first message has all of the fields fully defined
-    """
-    for _, msg, _ in bag.read_messages(topics=topic_name):
-        get_field_names('', msg, header_column_names)
-        break
-
-    """ Alphabetize and write the column names to the output file, minus the leading underscore """
-    header_column_names.sort()
-    trimmed_names = [col[1:] for col in header_column_names]
-    header_line = ','.join(trimmed_names) + '\n'
-    output_file.write(header_line)
-
-    return header_column_names
-
-
-def get_field_names(prefix, msg, existing_names):
+    field_names = dict((key,[]) for key in bag_topics)
+    for topic, msg, _ in bag.read_messages(topics=bag_topics.tolist()):
+        if(field_names[topic] == []):
+            get_field_names('', msg, topic)
+        if([] not in field_names.values()):
+            break
+    #print("field_names:")
+    #print(field_names)
+    for topic in bag_topics:
+        fields = field_names[topic]
+        for field in fields:
+            header_column_names.append('.'.join([topic,field]))
+            
+    
+def get_field_names(prefix, msg, topic):
+    global field_names
     """ Recursive helper function for writing the header line. Works on the same principle as how
         the topics' fields are listed. Instead of printing them out to standard output, the parts of
         the messages are combined with underscores. When a leaf field is encountered, the entire
@@ -333,40 +555,19 @@ def get_field_names(prefix, msg, existing_names):
     """
     if hasattr(msg, '__slots__'):
         for slot in msg.__slots__:
-            get_field_names('_'.join([prefix, slot]), getattr(msg, slot), existing_names)
+            get_field_names('_'.join([prefix, slot]), getattr(msg, slot), topic)
     elif isinstance(msg, list) and (len(msg) > 0) and hasattr(msg[0], '__slots__'):
         for slot in msg[0].__slots__:
-            get_field_names('_'.join([prefix, slot]), getattr(msg[0], slot), existing_names)
+            get_field_names('_'.join([prefix, slot]), getattr(msg[0], slot), topic)
     elif isinstance(msg, tuple):
-        existing_names.append(prefix)
+        field_arr = field_names[topic]
+        field_arr.append(prefix[1:])
+        field_names[topic] = field_arr
     else:
-        existing_names.append(prefix)
-
-
-def write_topic(bag, output_file, topic_name, column_names):
-    """ Iterates over a bag, finding all the messages for a given topic.
-
-        Begins by creating a dictionary the maps each field name to its alphabetical index, because
-        the CSV file columns are alphabetized.
-    """
-    column_mapping = dict(zip(column_names, range(0, len(column_names))))
-
-    """ Go through every message for a given topic, extract its data fields,
-            and write it to the output file
-    """
-    msg_count = 1
-    for topic, msg, t in bag.read_messages(topics=topic_name):
-        sys.stdout.write('\t\tWriting message %u%s' % (msg_count, "\r"))
-        msg_count += 1
-        column_values = {}
-        """ Build a dictionary of field names and their values. The field names
-                match the column headers.
-        """
-        find_field_value('', msg, column_values, column_mapping)
-        """ write the discovered values out to the file """
-        write_topic_line(output_file, column_mapping, column_values)
-
-    sys.stdout.write('\t\tProcessed %u messages\n' % (msg_count - 1))
+        field_arr = field_names[topic]
+        field_arr.append(prefix[1:])
+        #trimmed_fields = [field[1:] for field in field_arr]
+        field_names[topic]=field_arr
 
 
 def find_field_value(prefix, msg, existing_values, column_names):
@@ -399,59 +600,41 @@ def find_field_value(prefix, msg, existing_values, column_names):
         existing_values[prefix] = msg
 
 
-def write_topic_line(output_file, column_mapping, column_values):
-    """ Writes the discovered field/value pairs to the output file
-
-        We want to write the columns in alphabetical order. Rather than resorting the columns every
-        time, we use a dictionary to map a field name to an output index.
-    """
-    columns = len(column_mapping.keys()) * [None]
-
-    for key in column_values.keys():
-        if isinstance(column_values[key], (tuple, list)):
-            """ Fields that have a list of values, such as ranges in a laser scan, are problematic
-                for representation in a csv file. Each value in the field gets separated by 
-                ``, so that it fits in a single column. Matlab uses the backticks to split
-                the values
-            """
-            if len(column_values[key]) > 0:
-                combined_str = [str(x) for x in column_values[key]]
-                combined_str = '``'.join(combined_str)
-                columns[column_mapping[key]] = combined_str
-            else:
-                """ This handles the corner case where an empty array of arrays was in the file.
-                        For example, when we have an array of geometry_msgs/Vector3 values that is
-                        empty. In this case, the bag file does not have empty values for the x, y, z
-                        elements. Instead, we use the field name associated with the empty values to
-                        every column that should contain data for this array
-                """
-                for true_key in column_mapping.keys():
-                    if true_key.startswith(key):
-                        columns[column_mapping[true_key]] = ''
-        else:
-            """ Normal case of a one to one mapping between a field and a value """
-            out_str = str(column_values[key])
-            if test_for_numeric(out_str):
-                columns[column_mapping[key]] = str(column_values[key])
-            else:
-                columns[column_mapping[key]] = "\"" + str(column_values[key]) + "\""
-
-    """ Use the now alphabetized list of values, and join them in a single line and write it """
-    line = ','.join(columns) + '\n'
-    output_file.write(line)
+def write_to_csv(output_name):
+    global bag_array
+    col_count = len(bag_array[0])
+    f = open(output_name, 'w')
+    """ Go through the bag array and and write every row out to the CSV file """
+    print("\n\nwrite_to_csv("+output_name+")")
+    i = 0
+    for arr in bag_array:
+        #print("ROW "+str(i)+": "+str(arr))
+        line = ""
+        try:
+            for i in range(0,col_count):
+                line = line + str(arr[i])
+                if(i < col_count-1):
+                    line = line + ","
+            #line = ','.join(str(item) for item in arr) + '\n'
+            f.write(line + "\n")
+        except TypeError as e:
+            print("TypeError occurred on row "+str(i)+": "+str(arr))
+            print(e)
+            exit()
+        i = i + 1
+    #cribbed from write_header_line()
+    #""" Alphabetize and write the column names to the output file, minus the leading underscore """
+    #header_column_names.sort()
+    #trimmed_names = [col[1:] for col in header_column_names]
+    #header_line = ','.join(trimmed_names) + '\n'
+    #output_file.write(header_line)
+    
+    """ Cleanup """
+    f.close()
 
 
-def test_for_numeric(val):
-    try:
-        float(val)
-    except ValueError:
-        return False
-    else:
-        return True
-
-
-if __name__ == "__main__":
-    global hz_dict, bag_topics
+def main():
+    global bag_array
     """ Main entry point for the function. Reads the command line arguments and performs the
         requested actions
     """
@@ -460,7 +643,6 @@ if __name__ == "__main__":
     args = argument_parser.parse_args()
     if not validate_args(args):
         sys.exit()
-
     # Perform the requested actions on each bag file
     idx = 0
     for bag in args.bag:
@@ -471,15 +653,16 @@ if __name__ == "__main__":
             display_stats(bag)
         else:
             find_hz(bag)
-            for topic in bag_topics:
-                print('\tProcessing topic: ' + topic)
-                """ Output topic information to a file. If no output file has been specified, build one
-                    from the file name and topic
-                """
-                if args.out_file is None:
-                    out_file = os.path.splitext(bag)[0] + topic.replace('/', '_') + '.csv'
-                else:
-                    out_file = args.out_file[idx]
-                write_to_csv(bag, out_file, topic)
-                idx += 1
+            process_bag(bag)
+            #print('\tProcessing topic: ' + topic)
+            if args.out_file is None:
+                out_file = os.path.splitext(bag)[0] + '.csv'
+            else:
+                out_file = args.out_file[idx]
+            write_to_csv(out_file)
+            
+
+if __name__ == "__main__":
+    main()
+            
 
