@@ -15,6 +15,17 @@
 #   You should have received a copy of the GNU General Public License
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+
+# TEST FOR GAPS ON:
+# sweep/sweep_for_target_2019-04-18-10-30-55interpolated.csv
+# sweep/sweep_for_target_2019-04-18-10-28-18interpolated.csv
+# sweep/sweep_for_target_2019-04-12-19-53-11interpolated.csv
+# sweep/sweep_for_target_2019-04-11-09-01-22interpolated.csv
+# sweep/sweep_for_target_2019-04-12-20-46-25interpolated.csv
+# sweep/sweep_for_target_2019-04-16-09-05-07interpolated.csv
+# sweep/sweep_for_target_2019-04-12-20-57-55interpolated.csv 
+# 
+
 from __future__ import print_function
 import argparse
 import os
@@ -44,6 +55,8 @@ bag_topics = []
 bag_array = []
 start_time = Duration(-1)
 time_deltas = []
+bag_info = {}
+max_universal_timestep = 0.01
 
 def build_parser():
     """Creates parser for command line arguments """
@@ -226,6 +239,8 @@ def gcd(L):
 #math domain error
 def find_hz(bag_name):
     global hz_dict, bag_topics
+    global max_universal_timestep
+    print("find_hz()")
     bag = rosbag.Bag(bag_name)
     bag_info = yaml.load(subprocess.Popen(['rosbag', 'info', '--yaml', bag_name], stdout=subprocess.PIPE).communicate()[0])
     bag_topic_dict = bag_info['topics']
@@ -235,8 +250,7 @@ def find_hz(bag_name):
         temp.append(topic['topic'])
     bag_topics = np.array(temp)
     bag_topics.sort()
-    print("bag_topics: ")
-    print(bag_topics)
+    #print("bag_topics: \n"+str(bag_topics))
     hz_dict = dict.fromkeys(bag_topics)
     bag_hzs = dict.fromkeys(bag_topics)
     for topic in bag_topics:
@@ -244,9 +258,6 @@ def find_hz(bag_name):
     for topic, msg, t in bag.read_messages():
         temp = hz_dict[topic]
         temp.append(t)
-        #if(topic == "/user_input"):
-        #	print(msg)
-        # 	print(temp)
     bag.close()
     
     nanoavgs = []
@@ -278,7 +289,9 @@ def find_hz(bag_name):
         hz_dict[topic] = r_avg
     gcd_ans = gcd(nanoavgs)
     hz_dict['all'] = float(gcd_ans)
-    print(hz_dict)
+    if(float(gcd_ans < max_universal_timestep)):
+        hz_dict['all'] = max_universal_timestep
+    print("universal timestep: "+str(hz_dict['all']))
     return hz_dict
 
 
@@ -288,7 +301,7 @@ def process_bag(bag_name):
     global bag_info
     bag_info = yaml.load(subprocess.Popen(
         ['rosbag', 'info', '--yaml', bag_name], stdout=subprocess.PIPE).communicate()[0])
-    print(bag_info)
+    #print(bag_info)
     #print(bag_info["start"])
     #print(type(bag_info["start"]))
     #exit()
@@ -302,7 +315,7 @@ def process_bag(bag_name):
     """ Go through the bag and and write every message into array """
     msg_count = 0
     print("process_bag("+bag_name+")")
-    print("\tbag size: rows:"+str(len(bag_array))+" cols:"+str(len(bag_array[0])))
+    #print("\tbag size: rows:"+str(len(bag_array))+" cols:"+str(len(bag_array[0])))
     for topic, msg, t in bag.read_messages(topics=bag_topics.tolist()):
         msg_count = msg_count + 1
         #print("\n\n===============MSG #"+str(msg_count)+"===============")
@@ -312,7 +325,12 @@ def process_bag(bag_name):
         row_index = get_row_index(start_time, t)
         parse_message_to_array(msg,topic,row_index)
     #trim_csv()
-    interpolate_columns()
+    # /user_input.header_seq /user_input.header_stamp_secs /user_input.header_stamp_nsecs
+            # /user_input.header_frame_id	/user_input.data	/user_input.reaction_time_secs
+            # /user_input.reaction_time_nsecs
+    non_interp_headers = ["/user_input.header_seq", "/user_input.header_stamp_secs", "/user_input.header_stamp_nsecs", "/user_input.header_frame_id", "/user_input.data", "/user_input.reaction_time_secs","/user_input.reaction_time_nsecs"]
+    fill_in_columns(non_interp_headers)
+    interpolate_columns(non_interp_headers)
     """ Cleanup """
     bag.close()
     
@@ -324,18 +342,13 @@ def get_row_index(start_time, t):
     #print("t.to_sec():"+str(t.to_sec()))
     #print("t-start_time:"+str(t-start_time))
     #print("t.to_sec()-start_time.to_sec():"+str(t.to_sec()-start_time.to_sec()))
-    # Python standard library round() is dangerous due to floating point math
-    #time_in = round(t.to_sec()-start_time.to_sec(), 2) 
     time_in = safe_round(t.to_sec()-start_time.to_sec(), 2)
-    #print("time_in(float):"+str(time_in))
     time_in = rospy.Time.from_sec(time_in)
-    #print("time_in(Time):"+str(time_in))
     row_index = float(time_in.to_sec() / hz_dict["all"])
     row_index = int(round(row_index))+1 # add 1 to accomodate headers at 0th position
-    #print("row_index:"+str(row_index))
     return row_index
 
-
+# Python standard library round() is dangerous due to floating point math
 def safe_round(num,sig_digs):
     return round(num+10**(-len(str(num))-1),sig_digs)
 
@@ -346,7 +359,13 @@ def parse_message_to_array(msg,topic,row_index):
     global hz_dict
     """ Get row to write to by rounding time_in """
     #print("\n\nwrite_message_to_array(msg,topic,time_in)")
-    row = bag_array[row_index]
+    try:
+        row = bag_array[row_index]
+    except IndexError as ex:
+        print(ex)
+        print("bag_array dimensions: rows:"+str(len(bag_array))+" columns:"+str(len(bag_array[0])))
+        print("row_index: "+str(row_index))
+        exit()
     column_values = {}
     column_mapping = field_names[topic]
     """ Build a dictionary of field names and their values. The field names
@@ -402,15 +421,13 @@ def check_empty(row):
     return all(first == "" and "" == rest for rest in iterator)
 
 
-def interpolate_columns():
+def interpolate_columns(noninterp_headers):
     global bag_array
     global header_column_names
-    print("\n\ninterpolate_columns()")
-    temp_cols = ["/command_state.data"]
+    print("interpolate_columns()")
     for col in header_column_names:
-    #for col in temp_cols:
         col_index = header_column_names.index(col)
-        i = 0
+        i = 0 #row index
         first_index = 1
         first_val = bag_array[first_index][col_index]
         next_val = ""
@@ -431,61 +448,129 @@ def interpolate_columns():
             # print("first_val:"+str(first_val)+" next_val:"+str(next_val))
             # print("cell:"+str(cell))
             # skip empty cells
-            if(i == len(bag_array)-1):
-                # backfill empty cells with last message
-                # print("row number "+str(i)+", first_val:"+str(first_val)+" next_val:"+str(next_val))
-                for index in range(first_index, len(bag_array)):
-                    bag_array[index][col_index] = last_nonempty_instance
-            elif(cell == ""):
-                continue
-            # find first instance of non-empty cell
-            elif(first_val == "" and next_val == ""):
-                # print("first_val:"+str(first_val)+" next_val:"+str(next_val))
-                first_val = cell
-                first_index = i
-                # backfill all empty cells with first value found
-                for index in range(1,i):
-                    bag_array[index][col_index] = first_val
-            # find next instance of non-empty cell
-            elif(first_val != "" and next_val == ""):
-                # print("first_val:"+str(first_val)+" next_val:"+str(next_val))
-                next_val = cell
-                next_index = i
-                # if number, divide difference between the two by number of empty cells in between
-                if(test_for_numeric(first_val) and test_for_numeric(next_val)):
-                    difference = float(next_val) - float(first_val)
-                    timestep_difference = next_index - first_index
-                    # fill in the steps in between
-                    try:
-                        stepwise_difference = difference / timestep_difference
-                    except ZeroDivisionError:
-                        stepwise_difference = 0
-                    for index in range(1,timestep_difference):
-                        interpolated_datum = float(first_val) + stepwise_difference * index
-                        interpolated_datum = normalize_interpolated_datum(col, interpolated_datum)
-                        bag_array[first_index + index][col_index] = interpolated_datum
-                # if string, and fill in using last string until next non-empty cell
-                else:
-                    timestep_difference = next_index - first_index
-                    for index in range(1,timestep_difference):
-                        bag_array[first_index + index][col_index] = first_val
-                
-                if(next_val != ""):
-                    last_nonempty_instance = next_val
-                    last_nonempty_instance_index = next_index
-                else:
-                    last_nonempty_instance = first_val
-                    last_nonempty_instance_index = first_index
-                # switch first and next, set next to empty
-                first_val = next_val
-                next_val = ""
-                first_index = next_index
-            elif(i == len(bag_array)-2):
-                # backfill empty cells with last message
-                # print("row number "+str(i)+", first_val:"+str(first_val)+" next_val:"+str(next_val))
-                for index in range(first_index, len(bag_array)-1):
-                    bag_array[index][col_index] = last_nonempty_instance
+            if(col not in noninterp_headers):
+                if(i == len(bag_array)-1):
+                    # backfill empty cells with last message
+                    # print("row number "+str(i)+", first_val:"+str(first_val)+" next_val:"+str(next_val))
+                    for index in range(first_index, len(bag_array)):
+                        bag_array[index][col_index] = last_nonempty_instance
+                elif(cell == ""):
+                    continue
+                # find first instance of non-empty cell
+                elif(first_val == "" and next_val == ""):
+                    # print("first_val:"+str(first_val)+" next_val:"+str(next_val))
+                    first_val = cell
+                    first_index = i
+                    # backfill all empty cells with first value found
+                    for index in range(1,i):
+                        bag_array[index][col_index] = first_val
+                # find next instance of non-empty cell
+                elif(first_val != "" and next_val == ""):
+                    # print("first_val:"+str(first_val)+" next_val:"+str(next_val))
+                    next_val = cell
+                    next_index = i
+                    # if number, divide difference between the two by number of empty cells in between
+                    if(test_for_numeric(first_val) and test_for_numeric(next_val)):
+                        difference = float(next_val) - float(first_val)
+                        timestep_difference = next_index - first_index
+                        # fill in the steps in between
+                        try:
+                            stepwise_difference = difference / timestep_difference
+                        except ZeroDivisionError:
+                            stepwise_difference = 0
+                        for index in range(1,timestep_difference):
+                            interpolated_datum = float(first_val) + stepwise_difference * index
+                            interpolated_datum = normalize_interpolated_datum(col, interpolated_datum)
+                            bag_array[first_index + index][col_index] = interpolated_datum
+                    # if string, and fill in using last string until next non-empty cell
+                    else:
+                        timestep_difference = next_index - first_index
+                        for index in range(1,timestep_difference):
+                            bag_array[first_index + index][col_index] = first_val
+                    
+                    if(next_val != ""):
+                        last_nonempty_instance = next_val
+                        last_nonempty_instance_index = next_index
+                    else:
+                        last_nonempty_instance = first_val
+                        last_nonempty_instance_index = first_index
+                    # switch first and next, set next to empty
+                    first_val = next_val
+                    next_val = ""
+                    first_index = next_index
+                elif(i == len(bag_array)-2):
+                    # backfill empty cells with last message
+                    # print("row number "+str(i)+", first_val:"+str(first_val)+" next_val:"+str(next_val))
+                    for index in range(first_index, len(bag_array)-1):
+                        bag_array[index][col_index] = last_nonempty_instance
             
+
+def fill_in_columns(noninterp_headers):
+    global bag_array
+    global header_column_names
+    global hz_dict
+    print("fill_in_columns()")
+    persistence_range = int(1/hz_dict['all'])
+    print("persistence range: "+str(persistence_range))
+    persistence_dict = dict((key,0) for key in noninterp_headers)
+    for col in noninterp_headers:
+        #for key in hz_dict.keys():
+        #    if(col.find(key) >= 0):
+        #        persistence_range = int(1/hz_dict[key])
+        #        break
+        col_index = header_column_names.index(col)
+        i = 0 #row index
+        first_index = 1
+        first_val = bag_array[first_index][col_index]
+        next_val = ""
+        last_nonempty_instance = ""
+        for row in bag_array[0:len(bag_array)-1]:
+            # find next instance of non-empty cell
+            i = i + 1
+            # print("\n\ni:"+str(i))
+            cell = bag_array[i][col_index]
+            next_index = i
+            if("/user_input.header_seq" in col and cell == ""):
+                bag_array[i][col_index] = -1
+                continue
+            elif("/user_input.header_stamp_secs" in col and cell == ""):
+                bag_array[i][col_index] = -1
+                continue
+            elif("/user_input.header_stamp_nsecs" in col and cell == ""):
+                bag_array[i][col_index] = -1
+                continue
+            elif("/user_input.header_frame_id" in col and cell == ""):
+                bag_array[i][col_index] = "none"
+            elif("/user_input.data" in col):
+                if(cell == "" and persistence_dict[col] == 0):
+                    bag_array[i][col_index] = "UserCommand.Default"
+                elif(cell != "" and persistence_dict[col] == 0):
+                    persistence_dict[col] = persistence_range
+                    continue
+                else:
+                    bag_array[i][col_index] = bag_array[i-1][col_index]
+                    persistence_dict[col] = persistence_dict[col] - 1
+            elif("/user_input.reaction_time_secs" in col):
+                if(cell == "" and persistence_dict[col] == 0):
+                    bag_array[i][col_index] = -1
+                elif(cell != "" and persistence_dict[col] == 0):
+                    print("cell #"+str(i)+"=="+str(cell)+", persistence range=="+str(persistence_range))
+                    persistence_dict[col] = persistence_range
+                    continue
+                else:
+                    print("bag_array["+str(i)+"]["+str(col_index)+"]=="+str(bag_array[i-1][col_index])+", persistence range=="+str(persistence_dict[col]))
+                    bag_array[i][col_index] = bag_array[i-1][col_index]
+                    persistence_dict[col] = persistence_dict[col] - 1
+            elif("/user_input.reaction_time_nsecs" in col):
+                if(cell == "" and persistence_dict[col] == 0):
+                    bag_array[i][col_index] = -1
+                elif(cell != "" and persistence_dict[col] == 0):
+                    persistence_dict[col] = persistence_range
+                    continue
+                else:
+                    bag_array[i][col_index] = bag_array[i-1][col_index]
+                    persistence_dict[col] = persistence_dict[col] - 1
+                
 
 def normalize_interpolated_datum(col, interpolated_datum):
     if(col == "/visp_auto_tracker/status.data"):
@@ -515,13 +600,15 @@ def initialize_bag_array():
     print("initialize_bag_array()")
     #print("\trows (raw): "+str(rows))
     # Add 2 for rounding, 1 for headers row
+    # Some bags error out on the above addtl rows (due to extraneous msgs?)
+    # TODO: figure out why need for extra rows in some bags
     if(rows - (rows % 1) > 0):
-        rows = int(rows) + 2
+        rows = int(rows) + 3
     else:
-        rows = int(rows) + 1
+        rows = int(rows) + 2
     
-    #print("\trows: "+str(rows))
-    bag_array = [["" for i in range(arr2_length)] for i in range(rows)]
+    print("\trows: "+str(rows))
+    bag_array = [["" for i in range(arr2_length)] for i in range(rows+4)]
     bag_array[0] = header_column_names
     
 
@@ -530,7 +617,7 @@ def get_header_array(bag):
     global header_column_names #array preserving order of topics and their fields in bag_array
     global bag_topics
     global bag_array
-    print("INSIDE get_header_array")
+    #print("get_header_array()")
     header_column_names = []
     field_names = dict((key,[]) for key in bag_topics)
     for topic, msg, _ in bag.read_messages(topics=bag_topics.tolist()):
@@ -605,7 +692,7 @@ def write_to_csv(output_name):
     col_count = len(bag_array[0])
     f = open(output_name, 'w')
     """ Go through the bag array and and write every row out to the CSV file """
-    print("\n\nwrite_to_csv("+output_name+")")
+    print("write_to_csv("+output_name+")")
     i = 0
     for arr in bag_array:
         #print("ROW "+str(i)+": "+str(arr))
@@ -634,7 +721,7 @@ def write_to_csv(output_name):
 
 
 def main():
-    global bag_array
+    global bag_array, bag_info, hz_dict
     """ Main entry point for the function. Reads the command line arguments and performs the
         requested actions
     """
@@ -652,14 +739,16 @@ def main():
         elif args.stats:
             display_stats(bag)
         else:
+            bag_info = yaml.load(subprocess.Popen(
+        ['rosbag', 'info', '--yaml', bag], stdout=subprocess.PIPE).communicate()[0])
             find_hz(bag)
             process_bag(bag)
-            #print('\tProcessing topic: ' + topic)
             if args.out_file is None:
-                out_file = os.path.splitext(bag)[0] + '.csv'
+                out_file = os.path.splitext(bag)[0] + 'interpolated.csv'
             else:
                 out_file = args.out_file[idx]
             write_to_csv(out_file)
+            print(hz_dict)
             
 
 if __name__ == "__main__":
